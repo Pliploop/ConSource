@@ -3,10 +3,18 @@ import pytorch_lightning as pl
 from audio_diffusion_pytorch import DiffusionModel, UNetV0, VDiffusion, VSampler
 from audio_diffusion_pytorch.diffusion import *
 from pytorch_lightning.cli import OptimizerCallable
+from consource.models.instr_encoder.encoder import Encoder
+
+import torch
+import torch.nn.functional as F
+from torch import Tensor
+import wandb
 
 class CustomVDiffusion(VDiffusion):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
+        self.loss_fn = F.mse_loss
+        
     
     def forward(self, x: Tensor, noise: Tensor = None, **kwargs) -> Tensor:  # type: ignore
         batch_size, device = x.shape[0], x.device
@@ -18,6 +26,8 @@ class CustomVDiffusion(VDiffusion):
             noise = torch.randn_like(x)
         else:
             noise = noise.to(device)
+            
+        assert noise.shape == x.shape, f"Shape mismatch: {noise.shape} != {x.shape}"
         # Combine input and noise weighted by half-circle
         alphas, betas = self.get_alpha_beta(sigmas_batch)
         x_noisy = alphas * x + betas * noise
@@ -29,21 +39,22 @@ class CustomVDiffusion(VDiffusion):
 class ConSource(pl.LightningModule):
     def __init__(self, encoder, encoder_ckpt = None, freeze_encoder = True, cfg_training=0.1, embedding_max_length = 1,optimizer: OptimizerCallable = None):
         super().__init__()
-        self.encoder = encoder
+        self.encoder = Encoder(encoder)  # wrapping for easier checkpoint loading
         self.freeze_encoder = freeze_encoder
         self.diffuser = DiffusionModel(
             net_t = UNetV0,
             in_channels = 1, # U-Net: number of input channels
             channels=[256, 512,1024,1024,1024,1024], # U-Net: channels at each layer
+            # TODO: make this a parameter
             factors=[4, 4,4,4,4,4], # U-Net: downsampling and upsampling factors at each layer
             items=[2, 2, 2, 2, 2, 2], # U-Net: number of repeating items at each layer
             attentions=[0, 0,0,1,1,1], # U-Net: attention enabled/disabled at each layer
             attention_heads=8, # U-Net: number of attention heads per attention item
             attention_features=64, # U-Net: number of attention features per attention item
-            diffusion_t=VDiffusion, # The diffusion method used
+            diffusion_t=CustomVDiffusion, # The diffusion method used
             sampler_t=VSampler, # The diffusion sampler used
             use_text_conditioning=False,
-            use_embedding_cfg = False,
+            use_embedding_cfg = True,
             embedding_max_length = embedding_max_length,
             embedding_features = 512
         )
@@ -78,9 +89,26 @@ class ConSource(pl.LightningModule):
     def training_step(self, x):
         target = x['target']
         noise = x['accomp']
+        mix = x['mix']
         
         conditioning = self.extract_avg_embedding(target)
-        loss = self.diffuser(target, noise, noise = noise, embedding_features = conditioning, embedding_mask_proba = self.cfg_training)
+        loss = self.diffuser(target, noise=  noise, embedding = conditioning, embedding_mask_proba = self.cfg_training)
+        
+        self.log('train_loss', loss)
+        
+        # every 100 steps, log the audio
+        if self.global_step % 1000 == 0 and self.logger is not None:
+            with torch.no_grad():
+                output = self.diffuser.sample(mix, num_steps = 10, embedding = conditioning)
+                self.logger.experiment.log({
+                    "target": wandb.Audio(target, caption="Target sample")
+                })
+                self.logger.experiment.log({
+                    "output": wandb.Audio(output, caption="source separated")
+                })
+                self.logger.experiment.log({
+                    "mix": wandb.Audio(mix, caption="Mix")
+                })
         
         return loss
     

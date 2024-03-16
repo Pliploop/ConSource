@@ -56,7 +56,7 @@ class SourceSepDataset(torch.utils.data.Dataset):
                 - 'target': The audio of the target class.
                 - 'target_class': The class label of the target audio.
         """
-        folder = self.annotations[idx]['folder']
+        folder = self.annotations[idx]['folder_path']
         stems = self.annotations[idx]['stems']
         
         # load the stems
@@ -67,12 +67,12 @@ class SourceSepDataset(torch.utils.data.Dataset):
                 return self[idx+1]
             else:
                 target_path = stems[self.target_class]
-                mix_paths = [stems[stem] for stem in stems if stem != self.target_class]
         else:
             # randomly select a target class
             target_class = np.random.choice(list(stems.keys()))
             target_path = stems[target_class]
-            mix_paths = [stems[stem] for stem in stems if stem != target_class]
+            
+        mix_paths = [stems[stem] for stem in stems if stem != target_class]
             
         # get a random start point based on the length of the target audio
         sr, frames = get_file_info(target_path)

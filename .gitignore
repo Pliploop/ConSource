@@ -1,0 +1,4 @@
+# standard python gitignore
+*.pyc
+*/__pycache__/
+*.ipynb

@@ -1,6 +1,7 @@
 import torch.nn as nn
 
 
+
 class SampleCNN(nn.Module):
     def __init__(self,
                  strides=[3, 3, 3, 3, 3, 3, 3, 3, 3],
